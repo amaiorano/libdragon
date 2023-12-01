@@ -144,7 +144,7 @@ typedef struct
 	DRESULT (*disk_ioctl)(BYTE cmd, void* buff);
 } fat_disk_t;
 
-static fat_disk_t fat_disks[FF_VOLUMES] = {0};
+fat_disk_t fat_disks[FF_VOLUMES] = {0};
 
 DSTATUS disk_initialize(BYTE pdrv)
 {

@@ -3340,9 +3340,27 @@ static UINT find_volume (	/* Returns BS status found in the hosting drive */
 	UINT fmt, i;
 	DWORD mbr_pt[4];
 
+	BYTE *pt;
+	DWORD bsect, br[4];
 
-	fmt = check_fs(fs, 0);				/* Load sector 0 and check if it is an FAT VBR as SFD */
-	if (fmt != 2 && (fmt >= 3 || part == 0)) return fmt;	/* Returns if it is a FAT VBR as auto scan, not a BS or disk error */
+	//fmt = check_fs(fs, 0);				/* Load sector 0 and check if it is an FAT VBR as SFD */
+	//if (fmt != 2 && (fmt >= 3 || part == 0)) return fmt;	/* Returns if it is a FAT VBR as auto scan, not a BS or disk error */
+	/* Find an FAT partition on the drive. Supports only generic partitioning rules, FDISK and SFD. */
+	bsect = 0;
+	fmt = check_fs(fs, bsect);			/* Load sector 0 and check if it is an FAT-VBR as SFD */
+	if (fmt == 2 || (fmt < 2 && LD2PT(vol) != 0)) {	/* Not an FAT-VBR or forced partition number */
+		for (i = 0; i < 4; i++) {		/* Get partition offset */
+			pt = fs->win + (MBR_Table + i * SZ_PTE);
+			br[i] = pt[PTE_System] ? ld_dword(pt + PTE_StLba) : 0;
+		}
+		i = LD2PT(vol);					/* Partition number: 0:auto, 1-4:forced */
+		if (i) i--;
+		do {							/* Find an FAT volume */
+			bsect = br[i];
+			fmt = bsect ? check_fs(fs, bsect) : 3;	/* Check the partition */
+		} while (LD2PT(vol) == 0 && fmt >= 2 && ++i < 4);
+	}
+	if (fmt != 2 && (fmt >= 3 || part == 0)) return fmt;
 
 	/* Sector 0 is not an FAT VBR or forced partition number wants a partition */
 
@@ -3380,7 +3398,7 @@ static UINT find_volume (	/* Returns BS status found in the hosting drive */
 }
 
 
-
+uint32_t LastError = 0;
 
 /*-----------------------------------------------------------------------*/
 /* Determine logical drive number and mount the volume if needed         */
@@ -3445,6 +3463,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 	/* Find an FAT volume on the drive */
 	fmt = find_volume(fs, LD2PT(vol));
 	if (fmt == 4) return FR_DISK_ERR;		/* An error occured in the disk I/O layer */
+	LastError = 1;
 	if (fmt >= 2) return FR_NO_FILESYSTEM;	/* No FAT volume is found */
 	bsect = fs->winsect;					/* Volume location */
 
@@ -3456,26 +3475,33 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		DWORD so, cv, bcl, i;
 
 		for (i = BPB_ZeroedEx; i < BPB_ZeroedEx + 53 && fs->win[i] == 0; i++) ;	/* Check zero filler */
+		LastError = 2;
 		if (i < BPB_ZeroedEx + 53) return FR_NO_FILESYSTEM;
 
+		LastError = 3;
 		if (ld_word(fs->win + BPB_FSVerEx) != 0x100) return FR_NO_FILESYSTEM;	/* Check exFAT version (must be version 1.0) */
 
+		LastError = 4;
 		if (1 << fs->win[BPB_BytsPerSecEx] != SS(fs)) {	/* (BPB_BytsPerSecEx must be equal to the physical sector size) */
 			return FR_NO_FILESYSTEM;
 		}
 
 		maxlba = ld_qword(fs->win + BPB_TotSecEx) + bsect;	/* Last LBA + 1 of the volume */
+		LastError = 5;
 		if (!FF_LBA64 && maxlba >= 0x100000000) return FR_NO_FILESYSTEM;	/* (It cannot be handled in 32-bit LBA) */
 
 		fs->fsize = ld_dword(fs->win + BPB_FatSzEx);	/* Number of sectors per FAT */
 
 		fs->n_fats = fs->win[BPB_NumFATsEx];			/* Number of FATs */
+		LastError = 6;
 		if (fs->n_fats != 1) return FR_NO_FILESYSTEM;	/* (Supports only 1 FAT) */
 
 		fs->csize = 1 << fs->win[BPB_SecPerClusEx];		/* Cluster size */
+		LastError = 7;
 		if (fs->csize == 0)	return FR_NO_FILESYSTEM;	/* (Must be 1..32768) */
 
 		nclst = ld_dword(fs->win + BPB_NumClusEx);		/* Number of clusters */
+		LastError = 8;
 		if (nclst > MAX_EXFAT) return FR_NO_FILESYSTEM;	/* (Too many clusters) */
 		fs->n_fatent = nclst + 2;
 
@@ -3483,6 +3509,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		fs->volbase = bsect;
 		fs->database = bsect + ld_dword(fs->win + BPB_DataOfsEx);
 		fs->fatbase = bsect + ld_dword(fs->win + BPB_FatOfsEx);
+		LastError = 9;
 		if (maxlba < (QWORD)fs->database + nclst * fs->csize) return FR_NO_FILESYSTEM;	/* (Volume size must not be smaller than the size requiered) */
 		fs->dirbase = ld_dword(fs->win + BPB_RootClusEx);
 
@@ -3490,6 +3517,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		so = i = 0;
 		for (;;) {	/* Find the bitmap entry in the root directory (in only first cluster) */
 			if (i == 0) {
+				LastError = 10;
 				if (so >= fs->csize) return FR_NO_FILESYSTEM;	/* Not found? */
 				if (move_window(fs, clst2sect(fs, (DWORD)fs->dirbase) + so) != FR_OK) return FR_DISK_ERR;
 				so++;
@@ -3498,12 +3526,14 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 			i = (i + SZDIRE) % SS(fs);	/* Next entry */
 		}
 		bcl = ld_dword(fs->win + i + 20);					/* Bitmap cluster */
+		LastError = 11;
 		if (bcl < 2 || bcl >= fs->n_fatent) return FR_NO_FILESYSTEM;
 		fs->bitbase = fs->database + fs->csize * (bcl - 2);	/* Bitmap sector */
 		for (;;) {	/* Check if bitmap is contiguous */
 			if (move_window(fs, fs->fatbase + bcl / (SS(fs) / 4)) != FR_OK) return FR_DISK_ERR;
 			cv = ld_dword(fs->win + bcl % (SS(fs) / 4) * 4);
 			if (cv == 0xFFFFFFFF) break;				/* Last link? */
+			LastError = 12;
 			if (cv != ++bcl) return FR_NO_FILESYSTEM;	/* Fragmented? */
 		}
 
@@ -3514,6 +3544,7 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 	} else
 #endif	/* FF_FS_EXFAT */
 	{
+		LastError = 13;
 		if (ld_word(fs->win + BPB_BytsPerSec) != SS(fs)) return FR_NO_FILESYSTEM;	/* (BPB_BytsPerSec must be equal to the physical sector size) */
 
 		fasize = ld_word(fs->win + BPB_FATSz16);		/* Number of sectors per FAT */
@@ -3521,30 +3552,37 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		fs->fsize = fasize;
 
 		fs->n_fats = fs->win[BPB_NumFATs];				/* Number of FATs */
+		LastError = 14;
 		if (fs->n_fats != 1 && fs->n_fats != 2) return FR_NO_FILESYSTEM;	/* (Must be 1 or 2) */
 		fasize *= fs->n_fats;							/* Number of sectors for FAT area */
 
 		fs->csize = fs->win[BPB_SecPerClus];			/* Cluster size */
+		LastError = 15;
 		if (fs->csize == 0 || (fs->csize & (fs->csize - 1))) return FR_NO_FILESYSTEM;	/* (Must be power of 2) */
 
 		fs->n_rootdir = ld_word(fs->win + BPB_RootEntCnt);	/* Number of root directory entries */
+		LastError = 16;
 		if (fs->n_rootdir % (SS(fs) / SZDIRE)) return FR_NO_FILESYSTEM;	/* (Must be sector aligned) */
 
 		tsect = ld_word(fs->win + BPB_TotSec16);		/* Number of sectors on the volume */
 		if (tsect == 0) tsect = ld_dword(fs->win + BPB_TotSec32);
 
 		nrsv = ld_word(fs->win + BPB_RsvdSecCnt);		/* Number of reserved sectors */
+		LastError = 17;
 		if (nrsv == 0) return FR_NO_FILESYSTEM;			/* (Must not be 0) */
 
 		/* Determine the FAT sub type */
 		sysect = nrsv + fasize + fs->n_rootdir / (SS(fs) / SZDIRE);	/* RSV + FAT + DIR */
+		LastError = 18;
 		if (tsect < sysect) return FR_NO_FILESYSTEM;	/* (Invalid volume size) */
 		nclst = (tsect - sysect) / fs->csize;			/* Number of clusters */
+		LastError = 19;
 		if (nclst == 0) return FR_NO_FILESYSTEM;		/* (Invalid volume size) */
 		fmt = 0;
 		if (nclst <= MAX_FAT32) fmt = FS_FAT32;
 		if (nclst <= MAX_FAT16) fmt = FS_FAT16;
 		if (nclst <= MAX_FAT12) fmt = FS_FAT12;
+		LastError = 20;
 		if (fmt == 0) return FR_NO_FILESYSTEM;
 
 		/* Boundaries and Limits */
@@ -3553,16 +3591,20 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 		fs->fatbase = bsect + nrsv; 					/* FAT start sector */
 		fs->database = bsect + sysect;					/* Data start sector */
 		if (fmt == FS_FAT32) {
+			LastError = 21;
 			if (ld_word(fs->win + BPB_FSVer32) != 0) return FR_NO_FILESYSTEM;	/* (Must be FAT32 revision 0.0) */
+			LastError = 22;
 			if (fs->n_rootdir != 0) return FR_NO_FILESYSTEM;	/* (BPB_RootEntCnt must be 0) */
 			fs->dirbase = ld_dword(fs->win + BPB_RootClus32);	/* Root directory start cluster */
 			szbfat = fs->n_fatent * 4;					/* (Needed FAT size) */
 		} else {
+			LastError = 23;
 			if (fs->n_rootdir == 0)	return FR_NO_FILESYSTEM;	/* (BPB_RootEntCnt must not be 0) */
 			fs->dirbase = fs->fatbase + fasize;			/* Root directory start sector */
 			szbfat = (fmt == FS_FAT16) ?				/* (Needed FAT size) */
 				fs->n_fatent * 2 : fs->n_fatent * 3 / 2 + (fs->n_fatent & 1);
 		}
+		LastError = 24;
 		if (fs->fsize < (szbfat + (SS(fs) - 1)) / SS(fs)) return FR_NO_FILESYSTEM;	/* (BPB_FATSz must not be less than the size needed) */
 
 #if !FF_FS_READONLY
@@ -3697,6 +3739,7 @@ FRESULT f_mount (
 	if (opt == 0) return FR_OK;			/* Do not mount now, it will be mounted later */
 
 	res = mount_volume(&path, &fs, 0);	/* Force mounted the volume */
+	//res = find_volume(&fs, 0);
 	LEAVE_FF(fs, res);
 }
 

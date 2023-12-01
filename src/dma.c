@@ -47,6 +47,8 @@ static volatile int __dma_busy(void)
     return PI_regs->status & (PI_STATUS_DMA_BUSY | PI_STATUS_IO_BUSY);
 }
 
+bool io_accessible(uint32_t pi_address);
+
 /**
  * @brief Check whether the specified PI address can be accessed doing I/O from CPU
  * 

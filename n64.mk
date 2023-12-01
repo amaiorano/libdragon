@@ -31,12 +31,12 @@ N64_MKDFS = $(N64_BINDIR)/mkdfs
 N64_TOOL = $(N64_BINDIR)/n64tool
 N64_AUDIOCONV = $(N64_BINDIR)/audioconv64
 
-N64_CFLAGS =  -march=vr4300 -mtune=vr4300 -I$(N64_INCLUDEDIR)
+N64_CFLAGS = -ggdb -march=vr4300 -mtune=vr4300 -I$(N64_INCLUDEDIR)
 N64_CFLAGS += -falign-functions=32 -ffunction-sections -fdata-sections
 N64_CFLAGS += -DN64 -O2 -Wall -Werror -Wno-error=deprecated-declarations -fdiagnostics-color=always
-N64_ASFLAGS = -mtune=vr4300 -march=vr4300 -Wa,--fatal-warnings
-N64_RSPASFLAGS = -march=mips1 -mabi=32 -Wa,--fatal-warnings
-N64_LDFLAGS = -L$(N64_LIBDIR) -ldragon -lm -ldragonsys -Tn64.ld --gc-sections --wrap __do_global_ctors
+N64_ASFLAGS = -ggdb -mtune=vr4300 -march=vr4300 -Wa,--fatal-warnings
+N64_RSPASFLAGS = -ggdb -march=mips1 -mabi=32 -Wa,--fatal-warnings
+N64_LDFLAGS = -ggdb -L$(N64_LIBDIR) -ldragon -lm -ldragonsys -Tn64.ld --gc-sections --wrap __do_global_ctors
 
 N64_TOOLFLAGS = --header $(N64_HEADERPATH) --title $(N64_ROM_TITLE)
 N64_ED64ROMCONFIGFLAGS =  $(if $(N64_ROM_SAVETYPE),--savetype $(N64_ROM_SAVETYPE))
@@ -44,11 +44,11 @@ N64_ED64ROMCONFIGFLAGS += $(if $(N64_ROM_RTC),--rtc)
 N64_ED64ROMCONFIGFLAGS += $(if $(N64_ROM_REGIONFREE),--regionfree)
 
 ifeq ($(D),1)
-CFLAGS+=-g3
-CXXFLAGS+=-g3
-ASFLAGS+=-g
-RSPASFLAGS+=-g
-LDFLAGS+=-g
+CFLAGS+=-ggdb
+CXXFLAGS+=-ggdb
+ASFLAGS+=-ggdb
+RSPASFLAGS+=-ggdb
+LDFLAGS+=-ggdb
 endif
 
 # automatic .d dependency generation
